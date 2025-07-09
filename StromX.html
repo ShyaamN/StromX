@@ -1,84 +1,104 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>StromX - 3D Fluid (fixing indexing)</title>
+    <title>StromX - Pressure Solver Attempt</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: Arial; }
-        #info { position: absolute; top: 10px; left: 10px; color: #aaa; background: rgba(0,0,0,0.7); padding: 10px; font-size: 12px; }
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: verdana; }
+        #info { position: absolute; top: 10px; left: 10px; color: #ccc; background: rgba(0,0,0,0.8); padding: 12px; font-size: 13px; border-radius: 4px; }
     </style>
     <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
     <script type="importmap">{"imports": {"three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
 </head>
 <body>
-    <div id="info">3D Fluid Grid - Fixed indexing!<br>Still using particles (slow)</div>
+    <div id="info">3D Fluid - Pressure solver v1<br>Kinda works but unstable sometimes</div>
 <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     class Fluid {
-        constructor(res) {
+        constructor(res, h) {
             this.res = res;
-            this.numCells = (res+2) * (res+2) * (res+2);
+            this.h = h;
+            const n = res + 2;
+            this.numCells = n * n * n;
             this.u = new Float32Array(this.numCells);
             this.v = new Float32Array(this.numCells);
             this.w = new Float32Array(this.numCells);
-            this.density = new Float32Array(this.numCells);
+            this.p = new Float32Array(this.numCells);
+            this.s = new Float32Array(this.numCells);
+            this.s.fill(1.0);
         }
         
-        // Fixed the indexing - was doing it backwards before
         idx(x,y,z) {
             const n = this.res + 2;
             return x + n * (y + n * z);
         }
         
+        // First attempt at pressure solver - uses gauss seidel
+        solvePressure(iters) {
+            const n = this.res + 2;
+            for(let iter=0; iter<iters; iter++) {
+                for(let x=1; x<n-1; x++) {
+                    for(let y=1; y<n-1; y++) {
+                        for(let z=1; z<n-1; z++) {
+                            const c = this.idx(x,y,z);
+                            if(this.s[c] == 0) continue;
+                            
+                            // Calculate divergence
+                            const div = (this.u[this.idx(x+1,y,z)] - this.u[c] +
+                                        this.v[this.idx(x,y+1,z)] - this.v[c] +
+                                        this.w[this.idx(x,y,z+1)] - this.w[c]) / this.h;
+                            
+                            // Update pressure (might need tuning)
+                            this.p[c] = -div / 6.0;
+                            
+                            // Apply pressure gradient
+                            this.u[c] -= this.p[c];
+                            this.v[c] -= this.p[c];
+                            this.w[c] -= this.p[c];
+                        }
+                    }
+                }
+            }
+        }
+        
         step(dt) {
-            // Still just decay, no pressure yet
+            this.solvePressure(20);
+            // Decay
             for(let i=0; i<this.numCells; i++) {
                 this.u[i] *= 0.99;
                 this.v[i] *= 0.99;
                 this.w[i] *= 0.99;
-                this.density[i] *= 0.995;
             }
         }
     }
 
     let scene = new THREE.Scene(), camera, renderer, controls;
-    let fluid = new Fluid(20);
-    let particles = [];
+    let fluid = new Fluid(16, 1.0);
     
     camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 100);
-    camera.position.set(25, 25, 25);
+    camera.position.set(20, 15, 20);
     renderer = new THREE.WebGLRenderer();
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
     controls = new OrbitControls(camera, renderer.domElement);
     
-    // Fewer particles this time
-    let geometry = new THREE.SphereGeometry(0.3);
-    let material = new THREE.MeshBasicMaterial({color: 0x4488ff});
-    for(let i=0; i<200; i++) {
-        let mesh = new THREE.Mesh(geometry, material);
-        mesh.position.set(Math.random()*20-10, Math.random()*20-10, Math.random()*20-10);
-        scene.add(mesh);
-        particles.push({mesh: mesh, vx: 0, vy: 0, vz: 0});
-    }
-    
-    scene.add(new THREE.GridHelper(25, 25));
+    scene.add(new THREE.GridHelper(20, 20));
+    const box = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(16, 16, 16)),
+        new THREE.LineBasicMaterial({ color: 0x444444 })
+    );
+    scene.add(box);
     
     function animate() {
         fluid.step(0.016);
-        particles.forEach(p => {
-            p.mesh.position.x += (Math.random()-0.5) * 0.08;
-            p.mesh.position.y += (Math.random()-0.5) * 0.08;
-            p.mesh.position.z += (Math.random()-0.5) * 0.08;
-        });
         renderer.render(scene, camera);
         requestAnimationFrame(animate);
     }
     animate();
     
-    console.log('Indexing fixed! Next: add pressure solver');
+    console.log('Pressure solver added but needs work. Sometimes explodes lol');
 </script>
 </body>
 </html>
