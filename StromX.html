@@ -1,104 +1,108 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>StromX - Pressure Solver Attempt</title>
+    <title>StromX - Smoke Viz</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: verdana; }
-        #info { position: absolute; top: 10px; left: 10px; color: #ccc; background: rgba(0,0,0,0.8); padding: 12px; font-size: 13px; border-radius: 4px; }
+        body { font-family: verdana; margin: 0; overflow: hidden; background-color: #1a1a1a; }
+        #ui { position: absolute; top: 10px; left: 10px; background: rgba(255,255,255,0.9); padding: 12px; border-radius: 6px; }
+        label { display: block; margin: 5px 0; cursor: pointer; font-size: 13px; }
     </style>
     <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
     <script type="importmap">{"imports": {"three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
 </head>
 <body>
-    <div id="info">3D Fluid - Pressure solver v1<br>Kinda works but unstable sometimes</div>
+    <div id="ui">
+        <b>Wind Tunnel (WIP)</b><br><br>
+        <label><input type="checkbox" id="smoke" checked> Show smoke</label>
+        <label><input type="checkbox" id="slice"> Slice view</label>
+    </div>
 <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-    class Fluid {
-        constructor(res, h) {
-            this.res = res;
-            this.h = h;
-            const n = res + 2;
-            this.numCells = n * n * n;
-            this.u = new Float32Array(this.numCells);
-            this.v = new Float32Array(this.numCells);
-            this.w = new Float32Array(this.numCells);
-            this.p = new Float32Array(this.numCells);
-            this.s = new Float32Array(this.numCells);
-            this.s.fill(1.0);
-        }
+    // Smoke visualization using instanced rendering - way faster!
+    let scene = new THREE.Scene(), camera, renderer, controls;
+    let gridMesh, dummy = new THREE.Object3D();
+    let showSmoke = true, sliceView = false;
+    
+    const res = 24, cellSize = 1.0/res;
+    const totalCells = res * res * res;
+    
+    document.getElementById('smoke').onchange = (e) => showSmoke = e.target.checked;
+    document.getElementById('slice').onchange = (e) => sliceView = e.target.checked;
+    
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 100);
+    camera.position.set(1.5, 1.2, 2);
+    renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x1a1a1a);
+    document.body.appendChild(renderer.domElement);
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0.5, 0.5, 0.5);
+    controls.update();
+    
+    // Instanced mesh for smoke
+    gridMesh = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(cellSize, cellSize, cellSize),
+        new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
+        totalCells
+    );
+    scene.add(gridMesh);
+    
+    const box = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+        new THREE.LineBasicMaterial({ color: 0x444444 })
+    );
+    box.position.set(0.5, 0.5, 0.5);
+    scene.add(box);
+    
+    let smokeData = new Float32Array(totalCells);
+    let time = 0;
+    
+    function animate() {
+        time += 0.016;
         
-        idx(x,y,z) {
-            const n = this.res + 2;
-            return x + n * (y + n * z);
-        }
-        
-        // First attempt at pressure solver - uses gauss seidel
-        solvePressure(iters) {
-            const n = this.res + 2;
-            for(let iter=0; iter<iters; iter++) {
-                for(let x=1; x<n-1; x++) {
-                    for(let y=1; y<n-1; y++) {
-                        for(let z=1; z<n-1; z++) {
-                            const c = this.idx(x,y,z);
-                            if(this.s[c] == 0) continue;
-                            
-                            // Calculate divergence
-                            const div = (this.u[this.idx(x+1,y,z)] - this.u[c] +
-                                        this.v[this.idx(x,y+1,z)] - this.v[c] +
-                                        this.w[this.idx(x,y,z+1)] - this.w[c]) / this.h;
-                            
-                            // Update pressure (might need tuning)
-                            this.p[c] = -div / 6.0;
-                            
-                            // Apply pressure gradient
-                            this.u[c] -= this.p[c];
-                            this.v[c] -= this.p[c];
-                            this.w[c] -= this.p[c];
-                        }
+        // Fake some smoke movement for testing
+        let idx = 0;
+        const midSlice = Math.floor(res/2);
+        for(let i=0; i<res; i++) {
+            for(let j=0; j<res; j++) {
+                for(let k=0; k<res; k++) {
+                    // Add smoke at inlet
+                    if(i < 3 && j > res*0.3 && j < res*0.7 && k > res*0.3 && k < res*0.7) {
+                        smokeData[idx] = 0.8 + Math.sin(time*2) * 0.2;
+                    } else {
+                        smokeData[idx] *= 0.98; // Decay
                     }
+                    
+                    const hide = sliceView && k !== midSlice;
+                    const alpha = showSmoke ? smokeData[idx] : 0;
+                    
+                    if(alpha < 0.02 || hide) {
+                        dummy.scale.set(0,0,0);
+                    } else {
+                        dummy.position.set((i+0.5)*cellSize, (j+0.5)*cellSize, (k+0.5)*cellSize);
+                        dummy.scale.set(0.9, 0.9, 0.9);
+                    }
+                    
+                    dummy.updateMatrix();
+                    gridMesh.setMatrixAt(idx, dummy.matrix);
+                    gridMesh.setColorAt(idx, new THREE.Color(alpha*0.1, alpha*0.6, alpha));
+                    idx++;
                 }
             }
         }
         
-        step(dt) {
-            this.solvePressure(20);
-            // Decay
-            for(let i=0; i<this.numCells; i++) {
-                this.u[i] *= 0.99;
-                this.v[i] *= 0.99;
-                this.w[i] *= 0.99;
-            }
-        }
-    }
-
-    let scene = new THREE.Scene(), camera, renderer, controls;
-    let fluid = new Fluid(16, 1.0);
-    
-    camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 100);
-    camera.position.set(20, 15, 20);
-    renderer = new THREE.WebGLRenderer();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
-    controls = new OrbitControls(camera, renderer.domElement);
-    
-    scene.add(new THREE.GridHelper(20, 20));
-    const box = new THREE.LineSegments(
-        new THREE.EdgesGeometry(new THREE.BoxGeometry(16, 16, 16)),
-        new THREE.LineBasicMaterial({ color: 0x444444 })
-    );
-    scene.add(box);
-    
-    function animate() {
-        fluid.step(0.016);
+        gridMesh.instanceMatrix.needsUpdate = true;
+        if(gridMesh.instanceColor) gridMesh.instanceColor.needsUpdate = true;
+        
         renderer.render(scene, camera);
         requestAnimationFrame(animate);
     }
     animate();
     
-    console.log('Pressure solver added but needs work. Sometimes explodes lol');
+    console.log('Smoke visualization working! Need to connect to real fluid sim');
 </script>
 </body>
 </html>
