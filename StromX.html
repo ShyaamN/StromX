@@ -1,7 +1,7 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html>
 <head>
-    <title>StromX - Almost There</title>
+    <title>StromX</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body { font-family: verdana; font-size: 15px; margin: 0; overflow: hidden; background-color: #1a1a1a; }
@@ -24,11 +24,11 @@
     </script>
 </head>
 <body>
+
     <div id="ui-container">
-        <b style="font-size:14px">Wind Tunnel (beta)</b><br><br>
+        <b style="font-size:14px">Wind Tunnel</b><br><br>
         <label><input type="checkbox" id="smokeButton" onclick="window.scene.showSmoke = !window.scene.showSmoke;" checked>Show Smoke</label>
         <label><input type="checkbox" id="sliceButton" onclick="window.scene.sliceView = !window.scene.sliceView;">Slice Center</label>
-        <br><small style="color:#666">Needs performance tuning</small>
     </div>
     
 <script type="module">
@@ -37,7 +37,6 @@
 
     var U_FIELD = 0, V_FIELD = 1, W_FIELD = 2, S_FIELD = 3;
 
-    // Simplified version of full code - runs at 28x28x28 instead of 34
     class Fluid {
         constructor(density, numX, numY, numZ, h) {
             this.density = density;
@@ -55,26 +54,44 @@
             this.m = new Float32Array(this.numCells);
             this.newM = new Float32Array(this.numCells);
             this.m.fill(0.0);
+            this.p.fill(0.0);
+        }
+
+        integrate(dt, gravity) {
+            const strideY = this.numZ, strideX = this.numY * this.numZ;
+            for (var i = 1; i < this.numX; i++) {
+                for (var j = 1; j < this.numY-1; j++) {
+                    for (var k = 1; k < this.numZ; k++) {
+                        var idx = i*strideX + j*strideY + k;
+                        var idxDown = i*strideX + (j-1)*strideY + k;
+                        if (this.s[idx] != 0.0 && this.s[idxDown] != 0.0) this.v[idx] += gravity * dt;
+                    }
+                }    
+            }
         }
 
         solveIncompressibility(numIters, dt) {
             const strideY = this.numZ, strideX = this.numY * this.numZ;
             var cp = this.density * this.h / dt;
+
             for (var iter = 0; iter < numIters; iter++) {
                 for (var i = 1; i < this.numX-1; i++) {
                     for (var j = 1; j < this.numY-1; j++) {
                         for (var k = 1; k < this.numZ-1; k++) {
                             var center = i*strideX + j*strideY + k;
                             if (this.s[center] == 0.0) continue;
+
                             var sx0 = this.s[center - strideX], sx1 = this.s[center + strideX];
                             var sy0 = this.s[center - strideY], sy1 = this.s[center + strideY];
                             var sz0 = this.s[center - 1], sz1 = this.s[center + 1];
                             var s = sx0 + sx1 + sy0 + sy1 + sz0 + sz1;
                             if (s == 0.0) continue;
+
                             var div = this.u[center + strideX] - this.u[center] + 
                                       this.v[center + strideY] - this.v[center] +
                                       this.w[center + 1] - this.w[center];
-                            var p = -div / s * 1.8; // overrelaxation
+
+                            var p = -div / s * scene.overRelaxation;
                             this.p[center] += cp * p;
                             this.u[center] -= sx0 * p; this.u[center + strideX] += sx1 * p;
                             this.v[center] -= sy0 * p; this.v[center + strideY] += sy1 * p;
@@ -85,29 +102,118 @@
             }
         }
 
-        simulate(dt, numIters) {
-            this.p.fill(0.0);
-            this.solveIncompressibility(numIters, dt);
-            // Advection would go here but keeping simple for now
-            for(let i=0; i<this.numCells; i++) {
-                this.u[i] *= 0.995;
-                this.v[i] *= 0.995;
-                this.w[i] *= 0.995;
-                this.m[i] *= 0.997;
+        extrapolate() {
+            const strideY = this.numZ, strideX = this.numY * this.numZ;
+            for (var i = 0; i < this.numX; i++) {
+                for (var k = 0; k < this.numZ; k++) {
+                    this.u[i*strideX + 0*strideY + k] = this.u[i*strideX + 1*strideY + k];
+                    this.u[i*strideX + (this.numY-1)*strideY + k] = this.u[i*strideX + (this.numY-2)*strideY + k]; 
+                }
             }
+            for (var i = 0; i < this.numX; i++) {
+                for (var j = 0; j < this.numY; j++) {
+                     this.w[i*strideX + j*strideY + 0] = this.w[i*strideX + j*strideY + 1];
+                     this.w[i*strideX + j*strideY + (this.numZ-1)] = this.w[i*strideX + j*strideY + (this.numZ-2)];
+                }
+            }
+        }
+
+        sampleField(x, y, z, field) {
+            var h = this.h, h1 = 1.0 / h, h2 = 0.5 * h;
+            x = Math.max(Math.min(x, this.numX * h), h);
+            y = Math.max(Math.min(y, this.numY * h), h);
+            z = Math.max(Math.min(z, this.numZ * h), h);
+            var dx = 0.0, dy = 0.0, dz = 0.0, f;
+            switch (field) {
+                case U_FIELD: f = this.u; dy = h2; dz = h2; break;
+                case V_FIELD: f = this.v; dx = h2; dz = h2; break;
+                case W_FIELD: f = this.w; dx = h2; dy = h2; break;
+                case S_FIELD: f = this.m; dx = h2; dy = h2; dz = h2; break;
+            }
+            var x0 = Math.min(Math.floor((x-dx)*h1), this.numX-1), tx = ((x-dx) - x0*h) * h1, x1 = Math.min(x0 + 1, this.numX-1);
+            var y0 = Math.min(Math.floor((y-dy)*h1), this.numY-1), ty = ((y-dy) - y0*h) * h1, y1 = Math.min(y0 + 1, this.numY-1);
+            var z0 = Math.min(Math.floor((z-dz)*h1), this.numZ-1), tz = ((z-dz) - z0*h) * h1, z1 = Math.min(z0 + 1, this.numZ-1);
+            const strideY = this.numZ, strideX = this.numY * this.numZ;
+            var c000 = f[x0*strideX + y0*strideY + z0], c100 = f[x1*strideX + y0*strideY + z0];
+            var c010 = f[x0*strideX + y1*strideY + z0], c110 = f[x1*strideX + y1*strideY + z0];
+            var c001 = f[x0*strideX + y0*strideY + z1], c101 = f[x1*strideX + y0*strideY + z1];
+            var c011 = f[x0*strideX + y1*strideY + z1], c111 = f[x1*strideX + y1*strideY + z1];
+            var c00 = c000 * (1-tz) + c001 * tz, c10 = c100 * (1-tz) + c101 * tz;
+            var c01 = c010 * (1-tz) + c011 * tz, c11 = c110 * (1-tz) + c111 * tz;
+            var c0 = c00 * (1-ty) + c01 * ty, c1 = c10 * (1-ty) + c11 * ty;
+            return c0 * (1-tx) + c1 * tx;
+        }
+
+        avgU(i, j, k) { return this.sampleField((i+0.5)*this.h, (j+0.5)*this.h, (k+0.5)*this.h, U_FIELD); }
+        avgV(i, j, k) { return this.sampleField((i+0.5)*this.h, (j+0.5)*this.h, (k+0.5)*this.h, V_FIELD); }
+        avgW(i, j, k) { return this.sampleField((i+0.5)*this.h, (j+0.5)*this.h, (k+0.5)*this.h, W_FIELD); }
+
+        advectVel(dt) {
+            this.newU.set(this.u); this.newV.set(this.v); this.newW.set(this.w);
+            const strideY = this.numZ, strideX = this.numY * this.numZ, h = this.h, h2 = 0.5 * h;
+            for (var i = 1; i < this.numX; i++) {
+                for (var j = 1; j < this.numY; j++) {
+                    for (var k = 1; k < this.numZ; k++) {
+                        var idx = i*strideX + j*strideY + k;
+                        if (this.s[idx] != 0 && this.s[(i-1)*strideX + j*strideY + k] != 0 && j < this.numY-1 && k < this.numZ-1) {
+                            var x = i*h, y = j*h + h2, z = k*h + h2;
+                            this.newU[idx] = this.sampleField(x - dt*this.u[idx], y - dt*this.avgV(i,j,k), z - dt*this.avgW(i,j,k), U_FIELD);
+                        }
+                        if (this.s[idx] != 0 && this.s[idx - strideY] != 0 && i < this.numX-1 && k < this.numZ-1) {
+                            var x = i*h + h2, y = j*h, z = k*h + h2;
+                            this.newV[idx] = this.sampleField(x - dt*this.avgU(i,j,k), y - dt*this.v[idx], z - dt*this.avgW(i,j,k), V_FIELD);
+                        }
+                        if (this.s[idx] != 0 && this.s[idx - 1] != 0 && i < this.numX-1 && j < this.numY-1) {
+                            var x = i*h + h2, y = j*h + h2, z = k*h;
+                            this.newW[idx] = this.sampleField(x - dt*this.avgU(i,j,k), y - dt*this.avgV(i,j,k), z - dt*this.w[idx], W_FIELD);
+                        }
+                    }
+                }    
+            }
+            this.u.set(this.newU); this.v.set(this.newV); this.w.set(this.newW);
+        }
+
+        advectSmoke(dt) {
+            this.newM.set(this.m);
+            const strideY = this.numZ, strideX = this.numY * this.numZ, h = this.h, h2 = 0.5 * h;
+            for (var i = 1; i < this.numX-1; i++) {
+                for (var j = 1; j < this.numY-1; j++) {
+                    for (var k = 1; k < this.numZ-1; k++) {
+                        var idx = i*strideX + j*strideY + k;
+                        if (this.s[idx] != 0.0) {
+                            var u = (this.u[idx] + this.u[idx + strideX]) * 0.5;
+                            var v = (this.v[idx] + this.v[idx + strideY]) * 0.5;
+                            var w = (this.w[idx] + this.w[idx + 1]) * 0.5;
+                            this.newM[idx] = this.sampleField(i*h + h2 - dt*u, j*h + h2 - dt*v, k*h + h2 - dt*w, S_FIELD);
+                        }
+                    }
+                }    
+            }
+            this.m.set(this.newM);
+        }
+
+        simulate(dt, gravity, numIters) {
+            this.integrate(dt, gravity);
+            this.p.fill(0.0); // Reset pressure each frame for stability
+            this.solveIncompressibility(numIters, dt);
+            this.extrapolate();
+            this.advectVel(dt);
+            this.advectSmoke(dt);
         }
     }
 
     var scene = {
-        gravity: 0.0, dt: 1.0/60.0, numIters: 30,
+        gravity : 0.0, dt : 1.0 / 60.0, numIters : 40, overRelaxation : 1.9,
+        obstacleX : 0.4, obstacleY : 0.5, obstacleZ : 0.5, obstacleRadius: 0.15,
         showSmoke: true, sliceView: false, fluid: null
     };
     window.scene = scene;
 
-    function setupFluid() {
-        var res = 28, h = 1.0 / res;
+    function setupWindTunnel() {
+        var res = 34, h = 1.0 / res;
         var f = scene.fluid = new Fluid(1000.0, res, res, res, h);
         const strideY = f.numZ, strideX = f.numY * f.numZ;
+
         for (var i = 0; i < f.numX; i++) {
             for (var j = 0; j < f.numY; j++) {
                 for (var k = 0; k < f.numZ; k++) {
@@ -115,6 +221,22 @@
                     if (i == 0 || j == 0 || j == f.numY-1 || k == 0 || k == f.numZ-1) s = 0.0;
                     f.s[i*strideX + j*strideY + k] = s;
                     if (i == 1) f.u[i*strideX + j*strideY + k] = 2.0;
+                }
+            }
+        }
+
+        var r = scene.obstacleRadius;
+        for (var i = 1; i < f.numX-2; i++) {
+            for (var j = 1; j < f.numY-2; j++) {
+                for (var k = 1; k < f.numZ-2; k++) {
+                    var dx = (i + 0.5) * f.h - scene.obstacleX, dy = (j + 0.5) * f.h - scene.obstacleY, dz = (k + 0.5) * f.h - scene.obstacleZ;
+                    if (dx * dx + dy * dy + dz * dz < r * r) {
+                        var idx = i*strideX + j*strideY + k;
+                        f.s[idx] = 0.0; f.m[idx] = 1.0;
+                        f.u[idx] = 0; f.u[idx+strideX] = 0;
+                        f.v[idx] = 0; f.v[idx+strideY] = 0;
+                        f.w[idx] = 0; f.w[idx+1] = 0;
+                    }
                 }
             }
         }
@@ -150,21 +272,23 @@
         if (scene.fluid) {
             const f = scene.fluid, strideY = f.numZ, strideX = f.numY * f.numZ;
             const midY = Math.floor(f.numY/2), midZ = Math.floor(f.numZ/2);
-            for(let j=midY-2; j<midY+2; j++) for(let k=midZ-2; k<midZ+2; k++) f.m[2*strideX + j*strideY + k] = 1.0;
+            for(let j=midY-3; j<midY+3; j++) for(let k=midZ-3; k<midZ+3; k++) f.m[2*strideX + j*strideY + k] = 1.0;
             
-            f.simulate(scene.dt, scene.numIters);
+            f.simulate(scene.dt, scene.gravity, scene.numIters);
             
             let instanceIdx = 0, midK = Math.floor(f.numZ / 2);
             for (let i = 0; i < f.numX; i++) {
                 for (let j = 0; j < f.numY; j++) {
                     for (let k = 0; k < f.numZ; k++) {
                         let idx = i*strideX + j*strideY + k, r=0, g=0, b=0, a=0;
-                        if (scene.sliceView && k !== midK) {
-                            dummy.scale.set(0,0,0);
-                        } else {
-                            if (scene.showSmoke) {
+                        if (scene.sliceView && k !== midK) { dummy.scale.set(0,0,0); } 
+                        else {
+                            if (f.s[idx] == 0.0) {
+                                if (!(i==0 || i==f.numX-1 || j==0 || j==f.numY-1 || k==0 || k==f.numZ-1)) { r=1.0; g=0.0; b=0.0; a=0.8; }
+                            } else if (scene.showSmoke) {
                                 let s = f.m[idx]; r=s*0.1; g=s*0.7; b=s; a=s;
                             }
+                            
                             if (a < 0.02) dummy.scale.set(0,0,0);
                             else { 
                                 dummy.position.set((i+0.5)*f.h, (j+0.5)*f.h, (k+0.5)*f.h); 
@@ -186,10 +310,8 @@
     }
 
     initThree();
-    setupFluid();
+    setupWindTunnel();
     update();
-    
-    console.log('Getting there! Need to add advection and bump resolution');
 </script>
 </body>
 </html>
